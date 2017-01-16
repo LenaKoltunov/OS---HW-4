@@ -34,9 +34,13 @@ static inline int get_minor_from_inode(struct inode *inode)
 
 //-------------------------------- Variables ---------------------------------//
 int major_num;
+<<<<<<< HEAD
+bool codemaker_exits;
+=======
 
 bool codemaker_exists;
 spinlock_t codemaker_exists_lock;
+>>>>>>> 3e245db61e1bb56fee92c13843f593c64ec2ca97
 
 int colour_range;
 
@@ -280,6 +284,7 @@ write_lock,
  *   Returns 1 upon success.
  */
 	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
+<<<<<<< HEAD
 		Device_private_data data = filp->private_data;
 		if (data->minor == 0 ){
 			if(in_round==false){
@@ -314,10 +319,16 @@ write_lock,
 			}
 		}
 
+=======
+		// int i;
 
-		MassagePtr = buffer;
+		// for (i = 0; i < count && i < BUF_LEN; i++)
+		// 	get_user(buffer[i], buf + i);
+>>>>>>> 3e245db61e1bb56fee92c13843f593c64ec2ca97
 
-		return i;
+		// MassagePtr = buffer;
+
+		return 0;
 	}
 
 	/* 
