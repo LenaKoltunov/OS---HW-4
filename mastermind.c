@@ -38,24 +38,26 @@ bool codemaker_exits;
 bool in_round;
 
 char codeBuf[BUF_LEN];
-char buffer[BUF_LEN];
+int codeLen;
+char feedbackBuf[BUF_LEN];
+int feedbackLen;
+char guessBuf[BUF_LEN];
+int guessLen;
+
 char *MassagePtr;
 
 struct file_operations fops;
 
 typedef struct device_private_data  {
 	int minor;
-	int private_key; //TODO
 	int turns;
 	int score;
-
-
 }* Device_private_data;
 
 int num_of_codemakers; //TODO
 int num_of_codebrakers;
 
-// wait_queue_head_t wq_codemakers; //TODO
+wait_queue_head_t wq_codemakers; //TODO
 wait_queue_head_t wq_codebrakers;
 
 spinlock_t codemaker_exits_lock; //TODO
@@ -126,29 +128,33 @@ write_lock,
 		if( filp->f_mode & O_RDWR ){
 			Device_private_data data = filp->private_data;
 
-			spin_lock(counters_lock);
 			if (data->minor == 0)
 			{
 				if (in_round){
-					spin_unlock(counters_lock);
 					return -EBUSY;
 				}
-
+				
+				spin_lock(counters_lock);
 				num_of_codemakers--;
-				// wake_up_interruptible(&wq_codebrakers);
+				spin_unlock(counters_lock);
+
+				wake_up_interruptible(&wq_codebrakers);
 			}
 			if (data->minor == 1 && data->turns>0)
 			{
+				spin_lock(counters_lock);
 				num_of_codebrakers--;
+				spin_unlock(counters_lock);
 				// wake_up_interruptible(&wq_codemakers);
 			}
-			spin_unlock(counters_lock);
 
 			kfree(filp->private_data);
 
 			return 0;
 		}
 	}
+
+	ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
 /*
  * ● For the Codemaker (minor number 0) -
  *   Attempts to read the contents of the guess buffer.
@@ -160,7 +166,39 @@ write_lock,
  *   adequate size).
  *   Upon success this function return 1.
  *   Note: This operation should NOT empty the guess buffer.
- * ● For the Codebreaker (minor number 1) -
+*/
+
+		Device_private_data data = filp->private_data;
+		if (data->minor == 0 ){
+			if (guessLen = 0){
+				spin_lock(counters_lock);
+				if (num_of_codebrakers == 0){
+					spin_unlock(counters_lock);
+					return EOF;
+				} else wait_event_interruptible(wq_codebrakers, guessLen > 0);
+			}
+
+			int bytes_read = 0;
+
+			if (guessLen == 4){
+				MassagePtr = guessBuf;
+				if (*MassagePtr == 0)
+					return EOF;
+
+				while (count && *MassagePtr) {
+					put_user(*(MassagePtr++), buf++);
+					count--;
+					bytes_read++;
+				}
+			}
+
+			if (bytes_read == 4)
+				return 1;
+
+			return -1;
+		}
+
+ /* ● For the Codebreaker (minor number 1) -
  *   Attempts to read the feedback buffer.
  *   If the Codebreaker has no more turns available this function should immediately return
  *   -EPERM.
@@ -173,49 +211,42 @@ write_lock,
  *   This operation should return 1 upon success, and empty both the guess buffer and the
  *   feedback buffer
  */
-	ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
+		if (data->minor == 1){
+			if (data->turns = 0)
+				return -EPERM;
 
-		Device_private_data data = filp->private_data;
-		if (data->minor == 0 ){
-			if (count = 0)
-				return EOF;
-			//TODO: no turns
-			//TODO: empty buffer but player have turns, then wait for some one to write to buffer
-			//TODO: buffer full with a good massage, succes returns 1
+			if (feedbackLen == 0){
+				if (num_of_codemakers == 0)
+					return EOF;
+
+				wait_event_interruptible(wq_codemakers, feedbackLen > 0);
+			}
+
 			int bytes_read = 0;
+			bool guessed = true;
 
-			MassagePtr = buffer;
-			if (*MassagePtr == 0)
-				return 0;
+			if (feedbackLen == 4){
+				MassagePtr = guessBuf;
+				if (*MassagePtr == 0)
+					return EOF;
 
-			while (count && *MassagePtr) {
-				put_user(*(MassagePtr++), buf++);
-				count--;
-				bytes_read++;
+				while (count && *MassagePtr) {
+					if (*MassagePtr != 2)
+						guessed = false;
 
+					put_user(*(MassagePtr++), buf++);
+					count--;
+					bytes_read++;
+				}
+			}
+			// TODO: End the round.
+			if (bytes_read == 4){
+				feedbackLen = guessLen = 0;
 				return 1;
 			}
 
+			return -1;
 		}
-
-		if (data->minor == 1){
-
-		}
-
-		filp->f_op = &fops;
-
-		int bytes_read = 0;
-
-		if (*MassagePtr == 0)
-			return 0;
-
-		while (count && *MassagePtr) {
-			put_user(*(MassagePtr++), buf++);
-			count--;
-			bytes_read++;
-		}
-
-		return bytes_read;
 	}
 
 /*
@@ -331,16 +362,21 @@ write_lock,
 			return major_num;
 		}
 
+		codeBuf = guessBuf = feedbackBuf = 0;
+		memset(codeBuf, 0, BUF_LEN);
+		memset(feedbackBuf, 0, BUF_LEN);
+		memset(guessBuf, 0, BUF_LEN);
+
 		num_of_codemakers = 0;
 		num_of_codebrakers = 0;
 		spin_lock_init(&codemaker_exits_lock);
 		spin_lock_init(&counters_lock);
-		// init_waitqueue_head(&wq_codemakers);
+		init_waitqueue_head(&wq_codemakers);
 		init_waitqueue_head(&wq_codebrakers);
 		sema_init(&read_lock, 1);
 		sema_init(&write_lock, 1);
 		sema_init(&index_lock, 1);
-		memset(buffer, 0, BUF_LEN);
+
 
 		printk("simple device registered with %d major\n",major_num);
 
