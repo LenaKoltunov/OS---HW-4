@@ -44,11 +44,12 @@ bool in_round;
 spinlock_t in_round_lock;
 
 char passwordBuf[BUF_LEN];
-int passwordLen;
 char feedbackBuf[BUF_LEN];
-int feedbackLen;
 char guessBuf[BUF_LEN];
-int guessLen;
+
+bool passwordReady;
+bool feedbackReady;
+bool guessReady;
 
 char *MassagePtr;
 
@@ -175,17 +176,17 @@ write_lock,
 */
 		Device_private_data data = filp->private_data;
 		if (data->minor == 0 ){
-			if (guessLen == 0){
+			if (!guessReady){
 				spin_lock(counters_lock);
 				if (num_of_codebrakers == 0){
 					spin_unlock(counters_lock);
 					return EOF;
-				} else wait_event_interruptible(wq_guess, guessLen > 0);
+				} else wait_event_interruptible(wq_guess, guessReady);
 			}
 
 			int bytes_read = 0;
 
-			if (guessLen == 4){
+			if (guessReady){
 				MassagePtr = guessBuf;
 
 				if (*MassagePtr == 0)
@@ -221,17 +222,17 @@ write_lock,
 			if (data->turns == 0)
 				return -EPERM;
 
-			if (feedbackLen == 0){
+			if (!feedbackReady){
 				if (num_of_codemakers == 0)
 					return EOF;
 
-				wait_event_interruptible(wq_guess, feedbackLen > 0);
+				wait_event_interruptible(wq_guess, feedbackReady > 0);
 			}
 
 			int bytes_read = 0;
 			bool guessed = true;
 
-			if (feedbackLen == 4){
+			if (feedbackReady){
 				MassagePtr = guessBuf;
 				if (*MassagePtr == 0)
 					return EOF;
@@ -245,9 +246,13 @@ write_lock,
 					bytes_read++;
 				}
 			}
-			// TODO: End the round.
+			if (guessed){
+				in_round = false;
+				data->score++;
+			}
+
 			if (bytes_read == 4){
-				feedbackLen = guessLen = 0;
+				feedbackReady = guessReady = false;
 				return 1;
 			}
 		}
@@ -319,7 +324,7 @@ write_lock,
 			if (data->minor == 1)
 				return -EPERM;
 
-			if (passwordLen == 5 && num_of_codebrakers > 0){
+			if (passwordReady == 5 && num_of_codebrakers > 0){
 				in_round = true;
 				return 1;
 			}
@@ -366,7 +371,7 @@ write_lock,
 			return major_num;
 		}
 
-		passwordLen = guessLen = feedbackLen = 0;
+		passwordReady = guessReady = feedbackReady = 0;
 		memset(passwordBuf, 0, BUF_LEN);
 		memset(feedbackBuf, 0, BUF_LEN);
 		memset(guessBuf, 0, BUF_LEN);
