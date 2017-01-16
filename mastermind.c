@@ -24,18 +24,20 @@ MODULE_LICENSE("GPL");
 //--------------------------------- In Lines ---------------------------------//
 static inline int get_mahor_from_inode(struct inode *inode)
 {
-  return MAJOR(inode->i_rdev);
+	return MAJOR(inode->i_rdev);
 }
 
 static inline int get_minor_from_inode(struct inode *inode)
 {
-  return MINOR(inode->i_rdev);
+	return MINOR(inode->i_rdev);
 }
 
 //-------------------------------- Variables ---------------------------------//
 int major_num;
 bool codemaker_exits;
+bool in_round;
 
+char codeBuf[BUF_LEN];
 char buffer[BUF_LEN];
 char *MassagePtr;
 
@@ -45,21 +47,23 @@ typedef struct device_private_data  {
 	int minor;
 	int private_key; //TODO
 	int turns;
-	bool in_round;
+	int score;
+
+
 }* Device_private_data;
 
 int num_of_codemakers; //TODO
 int num_of_codebrakers;
 
-wait_queue_head_t wq_codemakers; //TODO
-wait_queue_head_t wq_codebrakers; //TODO
+// wait_queue_head_t wq_codemakers; //TODO
+wait_queue_head_t wq_codebrakers;
 
 spinlock_t codemaker_exits_lock; //TODO
 spinlock_t counters_lock; //TODO
 
 struct semaphore
-	read_lock,
-	write_lock,
+read_lock,
+write_lock,
 	index_lock; //TODO
 
 //-------------------------------- Functions ---------------------------------//
@@ -71,45 +75,44 @@ struct semaphore
  * exists, otherwise this function should close the module and return -EPERM.
  * Codebreakers should get 10 turns (each) by default when opening the module.
  */
-int open(struct inode* inode, struct file* filp){
-	int minor = get_minor_from_inode(inode);
+	int open(struct inode* inode, struct file* filp){
+		int minor = get_minor_from_inode(inode);
 
-	spin_lock(codemaker_exits_lock);
-	if (codemaker_exits && (minor == 0))
-		return -EPERM;
+		spin_lock(codemaker_exits_lock);
+		if (codemaker_exits && (minor == 0))
+			return -EPERM;
 
-	if (minor == 0)
-		codemaker_exits = true;
+		if (minor == 0)
+			codemaker_exits = true;
 
-	spin_unlock(codemaker_exits_lock);
+		spin_unlock(codemaker_exits_lock);
 
-	filp->private_data = kmalloc(sizeof(Device_private_data), GFP_KERNEL);
-	if (filp->private_data == NULL)
-		return -ENOMEM;
+		filp->private_data = kmalloc(sizeof(Device_private_data), GFP_KERNEL);
+		if (filp->private_data == NULL)
+			return -ENOMEM;
 
-	Device_private_data data = filp->private_data;
-	data->minor = minor;
-	filp->f_op = &fops;
+		Device_private_data data = filp->private_data;
+		data->minor = minor;
+		filp->f_op = &fops;
 
-	if (minor == 1) {
-		data->turns = 10;
-		data->in_round = false;
+		if (minor == 1) {
+			data->turns = 10;
+		}
+
+		spin_lock(counters_lock);
+		if (minor == 0)
+		{
+			num_of_codemakers++;
+		}
+		if (minor == 1)
+		{
+			num_of_codebrakers++;
+		}
+		spin_unlock(counters_lock);
+
+		return 0;
+
 	}
-
-	spin_lock(counters_lock);
-	if (minor == 0)
-	{
-		num_of_codemakers++;
-	}
-	if (minor == 1)
-	{
-		num_of_codebrakers++;
-	}
-	spin_unlock(counters_lock);
-
-	return 0;
-
-}
 
 /*
  * This function should close the module for the invoker, freeing used data and updating global
@@ -119,32 +122,33 @@ int open(struct inode* inode, struct file* filp){
  * You may assume that Codebreakers only invoke this function after playing a full turn (I.E. -
  * writing to the guess buffer AND reading from the feedback buffer)
  */
-int release(struct inode* inode, struct file* filp){
-	Device_private_data data = filp->private_data;
+	int release(struct inode* inode, struct file* filp){
+		if( filp->f_mode & O_RDWR ){
+			Device_private_data data = filp->private_data;
 
-	if (data->in_round)
-		return -EBUSY;
+			spin_lock(counters_lock);
+			if (data->minor == 0)
+			{
+				if (in_round){
+					spin_unlock(counters_lock);
+					return -EBUSY;
+				}
 
-	kfree(filp->private_data);
-	int minor = get_minor_from_inode(inode);
+				num_of_codemakers--;
+				// wake_up_interruptible(&wq_codebrakers);
+			}
+			if (data->minor == 1 && data->turns>0)
+			{
+				num_of_codebrakers--;
+				// wake_up_interruptible(&wq_codemakers);
+			}
+			spin_unlock(counters_lock);
 
-	spin_lock(counters_lock);
-	if (minor == 0)
-	{
-		num_of_codemakers--;
-		wake_up_interruptible(&wq_codebrakers);
+			kfree(filp->private_data);
+
+			return 0;
+		}
 	}
-	if (minor == 1)
-	{
-		num_of_codebrakers--;
-		wake_up_interruptible(&wq_codemakers);
-	}
-	spin_unlock(counters_lock);
-
-	printk("simple device released\n");
-	return 0;
-}
-
 /*
  * ● For the Codemaker (minor number 0) -
  *   Attempts to read the contents of the guess buffer.
@@ -169,20 +173,50 @@ int release(struct inode* inode, struct file* filp){
  *   This operation should return 1 upon success, and empty both the guess buffer and the
  *   feedback buffer
  */
-ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
-	int bytes_read = 0;
+	ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
 
-	if (*MassagePtr == 0)
-		return 0;
+		Device_private_data data = filp->private_data;
+		if (data->minor == 0 ){
+			if (count = 0)
+				return EOF;
+			//TODO: no turns
+			//TODO: empty buffer but player have turns, then wait for some one to write to buffer
+			//TODO: buffer full with a good massage, succes returns 1
+			int bytes_read = 0;
 
-	while (count && *MassagePtr) {
-		put_user(*(MassagePtr++), buf++);
-		count--;
-		bytes_read++;
+			MassagePtr = buffer;
+			if (*MassagePtr == 0)
+				return 0;
+
+			while (count && *MassagePtr) {
+				put_user(*(MassagePtr++), buf++);
+				count--;
+				bytes_read++;
+
+				return 1;
+			}
+
+		}
+
+		if (data->minor == 1){
+
+		}
+
+		filp->f_op = &fops;
+
+		int bytes_read = 0;
+
+		if (*MassagePtr == 0)
+			return 0;
+
+		while (count && *MassagePtr) {
+			put_user(*(MassagePtr++), buf++);
+			count--;
+			bytes_read++;
+		}
+
+		return bytes_read;
 	}
-
-	return bytes_read;
-}
 
 /*
  * ● For the Codemaker (minor number 0) -
@@ -204,23 +238,24 @@ ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
  *   empty it).
  *   Returns 1 upon success.
  */
-ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
-	int i;
+	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
+		int i;
 
-	for (i = 0; i < count && i < BUF_LEN; i++)
-		get_user(buffer[i], buf + i);
+		for (i = 0; i < count && i < BUF_LEN; i++)
+			get_user(buffer[i], buf + i);
 
-	MassagePtr = buffer;
+		MassagePtr = buffer;
 
-	return i;
-}
+		return i;
+	}
 /*
  * This function is not needed in this exercise, but to prevent the OS from generating a default
- * implementation you should write this function to always return -ENOSYS when invoked.
+ * implementation you should write this function to always return -ENOSYS when invoked. - DONE
  */
-loff_t llseek(struct file *filp, loff_t a, int num){
+	loff_t llseek(struct file *filp, loff_t a, int num){
+		return -ENOSYS;
+	}
 
-}
 /*
  * The Device Driver should support the following commands, as defined in mastermind.h:
  * ● ROUND_START -
@@ -231,11 +266,35 @@ loff_t llseek(struct file *filp, loff_t a, int num){
  *   it this function should return -EPERM
  * ● GET_MY_SCORE -
  *   Returns the score of the invoking process.
- *   In case of any other command code this function should return -ENOTTY.
+ *   In case of any other command code this function should return -ENOTTY. - DONE
  */
-int ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg){
+	int ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg){
+		switch( cmd ) {
+			case ROUND_START:
 
-}
+			if (arg<4 || arg>10)
+				return -EINVAL;
+			if (in_round)
+				return -EBUSY;
+			Device_private_data data = filp->private_data;
+			if (data->minor == 1 )
+				return -EPERM;
+
+			in_round = true;
+			generateCode();
+
+			break;
+
+			case GET_MY_SCORE:
+
+			Device_private_data data = filp->private_data;
+			return data->score;
+
+			break;
+
+			default: return -ENOTTY;
+		}
+	}
 
 
 
@@ -248,57 +307,66 @@ int ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned lon
  * the devices table, it can't be local to
  * init_module. NULL is for unimplemented functions. 
  */
-struct file_operations fops = {		//Alon: FOPS for minor=0
-	.open=		open,
-	.release=	release,
-	.read=		read,
-	.write=		write,
-	// .llseek=	my_llseek,
-	// .ioctl=		my_ioctl,
-	.owner=		THIS_MODULE,
-};
+	struct file_operations fops = {
+		.open=		open,
+		.release=	release,
+		.read=		read,
+		.write=		write,
+		.llseek=	llseek,
+		.ioctl=		ioctl,
+		.owner=		THIS_MODULE,
+	};
 
 /* 
  * Initialize the module - Register the character device 
  */
-int init_module()
-{
-	major_num = register_chrdev(ZERO, DEVICE_NAME, &fops);
-
-	if (major_num < 0)
+	int init_module()
 	{
-		printk(KERN_ALERT "Registering char device failed with %d\n",
-			major_num);
-		return major_num;
+		major_num = register_chrdev(ZERO, DEVICE_NAME, &fops);
+
+		if (major_num < 0)
+		{
+			printk(KERN_ALERT "Registering char device failed with %d\n",
+				major_num);
+			return major_num;
+		}
+
+		num_of_codemakers = 0;
+		num_of_codebrakers = 0;
+		spin_lock_init(&codemaker_exits_lock);
+		spin_lock_init(&counters_lock);
+		// init_waitqueue_head(&wq_codemakers);
+		init_waitqueue_head(&wq_codebrakers);
+		sema_init(&read_lock, 1);
+		sema_init(&write_lock, 1);
+		sema_init(&index_lock, 1);
+		memset(buffer, 0, BUF_LEN);
+
+		printk("simple device registered with %d major\n",major_num);
+
+		return 0;
 	}
-
-	num_of_codemakers = 0;
-	num_of_codebrakers = 0;
-	spin_lock_init(&codemaker_exits_lock);
-	spin_lock_init(&counters_lock);
-	init_waitqueue_head(&wq_codemakers);
-	init_waitqueue_head(&wq_codebrakers);
-	sema_init(&read_lock, 1);
-	sema_init(&write_lock, 1);
-	sema_init(&index_lock, 1);
-	//memset(buffer[i], 0, BUF_LEN);
-
-	printk("simple device registered with %d major\n",major_num);
-
-	return 0;
-}
 
 /* 
  * Cleanup - unregister the appropriate file from /proc 
  */
-void cleanup_module()
-{
-	int ret;
+	void cleanup_module()
+	{
+		int ret;
 
-	ret = unregister_chrdev(major_num, DEVICE_NAME);
+		ret = unregister_chrdev(major_num, DEVICE_NAME);
 
-	if (ret < 0)
-		printk(KERN_ALERT "Error: unregister_chrdev: %d\n", ret);
+		if (ret < 0)
+			printk(KERN_ALERT "Error: unregister_chrdev: %d\n", ret);
 
-	printk("releasing module with %d major\n",major_num);
-}
+		printk("releasing module with %d major\n",major_num);
+	}
+
+	void generateCode(){
+		srand((unsigned)time(&t));
+
+		for( i = 0 ; i < BUF_LEN ; i++ ) 
+		{
+			codeBuf[i] = 4 + rand() % 6;
+		}
+	}
