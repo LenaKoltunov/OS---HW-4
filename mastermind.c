@@ -35,6 +35,9 @@ static inline int get_minor_from_inode(struct inode *inode)
 //-------------------------------- Variables ---------------------------------//
 int major_num;
 bool codemaker_exits;
+
+int colour_range;
+
 bool in_round;
 
 char codeBuf[BUF_LEN];
@@ -270,14 +273,68 @@ write_lock,
  *   Returns 1 upon success.
  */
 	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
-		int i;
+		Device_private_data data = filp->private_data;
+		if (data->minor == 0 ){
+			if(in_round==false){
+				int i;
+				for (i = 0; i < count && i < BUF_LEN; i++){
+					get_user(codeBuf[i], buf + i);
+					codeLen++;
+				}
+				return 1;
+			}else{
+				//TODO in case there is breakers or not
+			}
+		}
 
-		for (i = 0; i < count && i < BUF_LEN; i++)
-			get_user(buffer[i], buf + i);
+		if (data->minor == 1 ){
+			if (guessLen != 0){
+
+				if(codemaker_exits){
+					wait_event_interruptible(wq_codebrakers, guessLen == 0);
+				}else{
+					return EOF;
+				}
+			}
+			int i;
+			for (i = 0; i < count && i < BUF_LEN; i++){
+				get_user(guessBuf[i], buf + i);
+				if(!checkInput(guessBuf[i])){
+					clearBuf(guessBuf, BUF_LEN);
+					return -EINVAL;
+				}
+				guessLen++;
+			}
+		}
+
 
 		MassagePtr = buffer;
 
 		return i;
+	}
+
+	/* 
+	 * Auxillary func:
+	 * clears buffer
+	 */
+
+	void clearBuf(char *buf, int size){
+		int i;
+		for (int i = 0; i < size; ++i)
+		{
+			buf[i]=0;
+		}
+	}
+
+	/* 
+	 * Auxillary func:
+	 * checks inputs range
+	 */
+	bool checkInput(char car){
+		if(car < '0' || car > ('0'+colour_range)){
+			return false;
+		}
+		return true;
 	}
 /*
  * This function is not needed in this exercise, but to prevent the OS from generating a default
