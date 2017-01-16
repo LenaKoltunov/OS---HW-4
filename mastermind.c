@@ -8,12 +8,12 @@
 #include <linux/sched.h>
 #include <linux/slab.h>			// for kmalloc
 #include <linux/spinlock.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include "hw4.h"
 #include "encryptor.h"
 #include "mastermind.h"
 #include "simple_module.h"
-
 
 MODULE_LICENSE("GPL");
 
@@ -34,11 +34,17 @@ static inline int get_minor_from_inode(struct inode *inode)
 
 //-------------------------------- Variables ---------------------------------//
 int major_num;
-bool codemaker_exits;
-bool in_round;
 
-char codeBuf[BUF_LEN];
-int codeLen;
+bool codemaker_exists;
+spinlock_t codemaker_exists_lock;
+
+int colour_range;
+
+bool in_round;
+spinlock_t in_round_lock;
+
+char passwordBuf[BUF_LEN];
+int passwordLen;
 char feedbackBuf[BUF_LEN];
 int feedbackLen;
 char guessBuf[BUF_LEN];
@@ -57,10 +63,9 @@ typedef struct device_private_data  {
 int num_of_codemakers; //TODO
 int num_of_codebrakers;
 
-wait_queue_head_t wq_codemakers; //TODO
-wait_queue_head_t wq_codebrakers;
+wait_queue_head_t wq_guess;
 
-spinlock_t codemaker_exits_lock; //TODO
+
 spinlock_t counters_lock; //TODO
 
 struct semaphore
@@ -80,14 +85,13 @@ write_lock,
 	int open(struct inode* inode, struct file* filp){
 		int minor = get_minor_from_inode(inode);
 
-		spin_lock(codemaker_exits_lock);
-		if (codemaker_exits && (minor == 0))
+		spin_lock(codemaker_exists_lock);
+		if (codemaker_exists && (minor == 0))
 			return -EPERM;
 
 		if (minor == 0)
-			codemaker_exits = true;
-
-		spin_unlock(codemaker_exits_lock);
+			codemaker_exists = true;
+		spin_unlock(codemaker_exists_lock);
 
 		filp->private_data = kmalloc(sizeof(Device_private_data), GFP_KERNEL);
 		if (filp->private_data == NULL)
@@ -138,7 +142,7 @@ write_lock,
 				num_of_codemakers--;
 				spin_unlock(counters_lock);
 
-				wake_up_interruptible(&wq_codebrakers);
+				wake_up_interruptible(&wq_guess);
 			}
 			if (data->minor == 1 && data->turns>0)
 			{
@@ -152,6 +156,8 @@ write_lock,
 
 			return 0;
 		}
+
+		return -1;
 	}
 
 	ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
@@ -167,21 +173,21 @@ write_lock,
  *   Upon success this function return 1.
  *   Note: This operation should NOT empty the guess buffer.
 */
-
 		Device_private_data data = filp->private_data;
 		if (data->minor == 0 ){
-			if (guessLen = 0){
+			if (guessLen == 0){
 				spin_lock(counters_lock);
 				if (num_of_codebrakers == 0){
 					spin_unlock(counters_lock);
 					return EOF;
-				} else wait_event_interruptible(wq_codebrakers, guessLen > 0);
+				} else wait_event_interruptible(wq_guess, guessLen > 0);
 			}
 
 			int bytes_read = 0;
 
 			if (guessLen == 4){
 				MassagePtr = guessBuf;
+
 				if (*MassagePtr == 0)
 					return EOF;
 
@@ -212,14 +218,14 @@ write_lock,
  *   feedback buffer
  */
 		if (data->minor == 1){
-			if (data->turns = 0)
+			if (data->turns == 0)
 				return -EPERM;
 
 			if (feedbackLen == 0){
 				if (num_of_codemakers == 0)
 					return EOF;
 
-				wait_event_interruptible(wq_codemakers, feedbackLen > 0);
+				wait_event_interruptible(wq_guess, feedbackLen > 0);
 			}
 
 			int bytes_read = 0;
@@ -244,9 +250,8 @@ write_lock,
 				feedbackLen = guessLen = 0;
 				return 1;
 			}
-
-			return -1;
 		}
+		return -1;
 	}
 
 /*
@@ -270,14 +275,14 @@ write_lock,
  *   Returns 1 upon success.
  */
 	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
-		int i;
+		// int i;
 
-		for (i = 0; i < count && i < BUF_LEN; i++)
-			get_user(buffer[i], buf + i);
+		// for (i = 0; i < count && i < BUF_LEN; i++)
+		// 	get_user(buffer[i], buf + i);
 
-		MassagePtr = buffer;
+		// MassagePtr = buffer;
 
-		return i;
+		return 0;
 	}
 /*
  * This function is not needed in this exercise, but to prevent the OS from generating a default
@@ -305,26 +310,25 @@ write_lock,
 
 			if (arg<4 || arg>10)
 				return -EINVAL;
+			colour_range = arg;
+
 			if (in_round)
 				return -EBUSY;
+
 			Device_private_data data = filp->private_data;
-			if (data->minor == 1 )
+			if (data->minor == 1)
 				return -EPERM;
 
-			in_round = true;
-			generateCode();
-
-			break;
+			if (passwordLen == 5 && num_of_codebrakers > 0){
+				in_round = true;
+				return 1;
+			}
+			return 0;
 
 			case GET_MY_SCORE:
-
-			Device_private_data data = filp->private_data;
 			return data->score;
-
-			break;
-
-			default: return -ENOTTY;
 		}
+		return -ENOTTY;
 	}
 
 
@@ -362,17 +366,16 @@ write_lock,
 			return major_num;
 		}
 
-		codeBuf = guessBuf = feedbackBuf = 0;
-		memset(codeBuf, 0, BUF_LEN);
+		passwordLen = guessLen = feedbackLen = 0;
+		memset(passwordBuf, 0, BUF_LEN);
 		memset(feedbackBuf, 0, BUF_LEN);
 		memset(guessBuf, 0, BUF_LEN);
 
 		num_of_codemakers = 0;
 		num_of_codebrakers = 0;
-		spin_lock_init(&codemaker_exits_lock);
+		spin_lock_init(&codemaker_exists_lock);
 		spin_lock_init(&counters_lock);
-		init_waitqueue_head(&wq_codemakers);
-		init_waitqueue_head(&wq_codebrakers);
+		init_waitqueue_head(&wq_guess);
 		sema_init(&read_lock, 1);
 		sema_init(&write_lock, 1);
 		sema_init(&index_lock, 1);
@@ -396,13 +399,4 @@ write_lock,
 			printk(KERN_ALERT "Error: unregister_chrdev: %d\n", ret);
 
 		printk("releasing module with %d major\n",major_num);
-	}
-
-	void generateCode(){
-		srand((unsigned)time(&t));
-
-		for( i = 0 ; i < BUF_LEN ; i++ ) 
-		{
-			codeBuf[i] = 4 + rand() % 6;
-		}
 	}
