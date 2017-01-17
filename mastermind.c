@@ -56,6 +56,7 @@ char *MassagePtr;
 struct file_operations fops;
 
 typedef struct device_private_data  {
+
 	int minor;
 	int turns;
 	int score;
@@ -83,8 +84,6 @@ write_lock,
  * Codebreakers should get 10 turns (each) by default when opening the module.
  */
 	int open(struct inode* inode, struct file* filp){
-		printk("trying to open file\n");
-		
 		int minor = get_minor_from_inode(inode);
 
 		spin_lock(codemaker_exists_lock);
@@ -121,7 +120,6 @@ write_lock,
 
 		printk("open file successfully\n");
 		return 0;
-
 	}
 
 /*
@@ -184,7 +182,10 @@ write_lock,
 				if (num_of_codebrakers == 0){
 					spin_unlock(counters_lock);
 					return EOF;
-				} else wait_event_interruptible(wq_guess, guessReady);
+				} else {
+					spin_unlock(counters_lock);
+					wait_event_interruptible(wq_guess, guessReady);
+				}
 			}
 
 			int bytes_read = 0;
@@ -230,7 +231,7 @@ write_lock,
 				if (num_of_codemakers == 0)
 					return EOF;
 
-				wait_event_interruptible(wq_guess, feedbackReady > 0);
+				wait_event_interruptible(wq_guess, feedbackReady);
 			}
 
 			int bytes_read = 0;
@@ -251,6 +252,7 @@ write_lock,
 					bytes_read++;
 				}
 			}
+
 			if (guessed){
 				in_round = false;
 				data->score++;
@@ -260,33 +262,9 @@ write_lock,
 				feedbackReady = guessReady = false;
 				return 1;
 			}
+			wake_up_interruptible(&wq_guess);
 		}
 		return -1;
-	}
-
-/*
- * ● For the Codemaker (minor number 0) -
- *   If the round hasn’t started - this function writes the contents of buf into the
- *   password buffer.
- *   While a round is in progress - attempts to write the contents of buf into the feedback
- *   buffer.
- *   The contents of buf should be generated using the generateFeedback function prior to
- *   writing.
- *   If the feedback buffer is full then the function should immediately return -EBUSY.
- *   Returns 1 upon success.
-*/
-
-/* 
-* Auxillary func:
-* clears buffer
-*/
-
-	void clearBuf(char *buf, int size){
-		int i;
-		for (i = 0; i < size; ++i)
-		{
-			buf[i]=0;
-		}
 	}
 
 	/* 
@@ -300,6 +278,17 @@ write_lock,
 		return true;
 	}
 
+/*
+ * ● For the Codemaker (minor number 0) -
+ *   If the round hasn’t started - this function writes the contents of buf into the
+ *   password buffer.
+ *   While a round is in progress - attempts to write the contents of buf into the feedback
+ *   buffer.
+ *   The contents of buf should be generated using the generateFeedback function prior to
+ *   writing.
+ *   If the feedback buffer is full then the function should immediately return -EBUSY.
+ *   Returns 1 upon success.
+*/
 	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
 		Device_private_data data = filp->private_data;
 		if (data->minor == 0 ){
@@ -308,8 +297,9 @@ write_lock,
 				for (i = 0; i < count && i < BUF_LEN; i++){
 					if (!get_user(passwordBuf[i], buf + i))
 						return -ENOMEM;
-					passwordReady = true;
 				}
+				passwordReady = true;
+				wake_up_interruptible(wq_guess);
 				return 1;
 			}else{
 				//TODO in case there is breakers or not
@@ -328,7 +318,7 @@ write_lock,
  *   empty it).
  *   Returns 1 upon success.
  */
-		if (data->minor == 1 ){
+		if (data->minor == 1){
 			if (guessReady){
 				if(codemaker_exists){
 					wait_event_interruptible(wq_guess, !guessReady);
@@ -340,16 +330,15 @@ write_lock,
 			for (; i < count && i < BUF_LEN; i++){
 				if (!get_user(guessBuf[i], buf + i))
 					return -ENOMEM;
+
 				if(!checkInput(guessBuf[i])){
-					clearBuf(guessBuf, BUF_LEN);
 					return -EINVAL;
 				}
+
 				guessReady = true;
+				wake_up_interruptible(&wq_guess);
 			}
 		}
-
-
-		// MassagePtr = buffer;
 
 		return i;
 	}
@@ -358,6 +347,7 @@ write_lock,
  * implementation you should write this function to always return -ENOSYS when invoked. - DONE
  */
 	loff_t llseek(struct file *filp, loff_t a, int num){
+		printk("llseek\n");
 		return -ENOSYS;
 	}
 
@@ -376,6 +366,7 @@ write_lock,
 	int ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg){
 		switch( cmd ) {
 			case ROUND_START:
+			printk("ioctl with ROUND_START\n");
 
 			if (arg<4 || arg>10)
 				return -EINVAL;
@@ -388,13 +379,16 @@ write_lock,
 			if (data->minor == 1)
 				return -EPERM;
 
-			if (passwordReady == 5 && num_of_codebrakers > 0){
+			if (passwordReady && num_of_codebrakers > 0){
+				printk("Round Started\n");
 				in_round = true;
 				return 1;
 			}
+
 			return 0;
 
 			case GET_MY_SCORE:
+			printk("ioctl with GET_MY_SCORE\n");
 			return data->score;
 		}
 		return -ENOTTY;
@@ -435,7 +429,7 @@ write_lock,
 			return major_num;
 		}
 
-		passwordReady = guessReady = feedbackReady = 0;
+		passwordReady = guessReady = feedbackReady = false;
 		memset(passwordBuf, 0, BUF_LEN);
 		memset(feedbackBuf, 0, BUF_LEN);
 		memset(guessBuf, 0, BUF_LEN);

@@ -1,0 +1,4 @@
+#!/bin/bash
+rm /dev/codemaker
+rm /dev/codebreaker
+rmmod mastermind

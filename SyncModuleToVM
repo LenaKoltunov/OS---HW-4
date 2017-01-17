@@ -6,3 +6,4 @@ rm main
 dos2unix $(find . -type f | grep -v 'git' | grep -v '.o')
 chmod +x SyncModuleToVM
 chmod +x runtest
+chmod +x rmdev
