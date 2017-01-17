@@ -20,6 +20,7 @@ MODULE_LICENSE("GPL");
 #define BUF_LEN 5
 #define ZERO 0
 #define DEVICE_NAME "mastermind"
+#define NUM_TURNS 10
 
 //--------------------------------- In Lines ---------------------------------//
 static inline int get_mahor_from_inode(struct inode *inode)
@@ -41,6 +42,7 @@ spinlock_t codemaker_exists_lock;
 int colour_range;
 
 bool in_round;
+int round_id;
 spinlock_t in_round_lock;
 
 char passwordBuf[BUF_LEN];
@@ -60,6 +62,7 @@ typedef struct device_private_data  {
 	int minor;
 	int turns;
 	int score;
+	int round_id;
 }* Device_private_data;
 
 int num_of_codemakers; //TODO
@@ -83,44 +86,47 @@ write_lock,
  * exists, otherwise this function should close the module and return -EPERM.
  * Codebreakers should get 10 turns (each) by default when opening the module.
  */
-	int open(struct inode* inode, struct file* filp){
-		int minor = get_minor_from_inode(inode);
+int open(struct inode* inode, struct file* filp){
+ 	printk("trying to open file\n");
 
-		spin_lock(codemaker_exists_lock);
-		if (codemaker_exists && (minor == 0))
-			return -EPERM;
+ 	int minor = get_minor_from_inode(inode);
 
-		if (minor == 0)
-			codemaker_exists = true;
+ 	spin_lock(codemaker_exists_lock);
+ 	if (codemaker_exists && (minor == 0))
+ 		return -EPERM;
 
-		spin_unlock(codemaker_exists_lock);
+ 	if (minor == 0)
+ 		codemaker_exists = true;
 
-		filp->private_data = kmalloc(sizeof(Device_private_data), GFP_KERNEL);
-		if (filp->private_data == NULL)
-			return -ENOMEM;
+ 	spin_unlock(codemaker_exists_lock);
 
-		Device_private_data data = filp->private_data;
-		data->minor = minor;
-		filp->f_op = &fops;
+ 	filp->private_data = kmalloc(sizeof(Device_private_data), GFP_KERNEL);
+ 	if (filp->private_data == NULL)
+ 		return -ENOMEM;
 
-		if (minor == 1) {
-			data->turns = 10;
-		}
+ 	Device_private_data data = filp->private_data;
+ 	data->minor = minor;
+ 	filp->f_op = &fops;
 
-		spin_lock(counters_lock);
-		if (minor == 0)
-		{
-			num_of_codemakers++;
-		}
-		if (minor == 1)
-		{
-			num_of_codebrakers++;
-		}
-		spin_unlock(counters_lock);
+ 	if (minor == 1) {
+ 		data->turns = NUM_TURNS;
+ 	}
 
-		printk("open file successfully\n");
-		return 0;
-	}
+ 	spin_lock(counters_lock);
+ 	if (minor == 0)
+ 	{
+ 		num_of_codemakers++;
+ 	}
+ 	if (minor == 1)
+ 	{
+ 		num_of_codebrakers++;
+ 	}
+ 	spin_unlock(counters_lock);
+
+ 	printk("open file successfully\n");
+ 	return 0;
+
+ }
 
 /*
  * This function should close the module for the invoker, freeing used data and updating global
@@ -130,39 +136,39 @@ write_lock,
  * You may assume that Codebreakers only invoke this function after playing a full turn (I.E. -
  * writing to the guess buffer AND reading from the feedback buffer)
  */
-	int release(struct inode* inode, struct file* filp){
-		if( filp->f_mode & O_RDWR ){
-			Device_private_data data = filp->private_data;
+int release(struct inode* inode, struct file* filp){
+	if( filp->f_mode & O_RDWR ){
+		Device_private_data data = filp->private_data;
 
-			if (data->minor == 0)
-			{
-				if (in_round){
-					return -EBUSY;
-				}
-				
-				spin_lock(counters_lock);
-				num_of_codemakers--;
-				spin_unlock(counters_lock);
-
-				wake_up_interruptible(&wq_guess);
+		if (data->minor == 0)
+		{
+			if (in_round){
+				return -EBUSY;
 			}
-			if (data->minor == 1 && data->turns>0)
-			{
-				spin_lock(counters_lock);
-				num_of_codebrakers--;
-				spin_unlock(counters_lock);
+
+			spin_lock(counters_lock);
+			num_of_codemakers--;
+			spin_unlock(counters_lock);
+
+			wake_up_interruptible(&wq_guess);
+		}
+		if (data->minor == 1 && data->turns>0)
+		{
+			spin_lock(counters_lock);
+			num_of_codebrakers--;
+			spin_unlock(counters_lock);
 				// wake_up_interruptible(&wq_codemakers);
-			}
-
-			kfree(filp->private_data);
-
-			return 0;
 		}
 
-		return -1;
+		kfree(filp->private_data);
+
+		return 0;
 	}
 
-	ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
+	return -1;
+}
+
+ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
 /*
  * ● For the Codemaker (minor number 0) -
  *   Attempts to read the contents of the guess buffer.
@@ -175,40 +181,37 @@ write_lock,
  *   Upon success this function return 1.
  *   Note: This operation should NOT empty the guess buffer.
 */
-		Device_private_data data = filp->private_data;
-		if (data->minor == 0 ){
-			if (!guessReady){
-				spin_lock(counters_lock);
-				if (num_of_codebrakers == 0){
-					spin_unlock(counters_lock);
-					return EOF;
-				} else {
-					spin_unlock(counters_lock);
-					wait_event_interruptible(wq_guess, guessReady);
-				}
-			}
+ Device_private_data data = filp->private_data;
+ if (data->minor == 0 ){
+ 	if (!guessReady){
+ 		spin_lock(counters_lock);
+ 		if (num_of_codebrakers == 0){
+ 			spin_unlock(counters_lock);
+ 			return EOF;
+ 		} else wait_event_interruptible(wq_guess, guessReady);
+ 	}
 
-			int bytes_read = 0;
+ 	int bytes_read = 0;
 
-			if (guessReady){
-				MassagePtr = guessBuf;
+ 	if (guessReady){
+ 		MassagePtr = guessBuf;
 
-				if (*MassagePtr == 0)
-					return EOF;
+ 		if (*MassagePtr == 0)
+ 			return EOF;
 
-				while (count && *MassagePtr) {
-					if (!put_user(*(MassagePtr++), buf++)) 
-						return -ENOMEM;
-					count--;
-					bytes_read++;
-				}
-			}
+ 		while (count && *MassagePtr) {
+ 			if (!put_user(*(MassagePtr++), buf++)) 
+ 				return -ENOMEM;
+ 			count--;
+ 			bytes_read++;
+ 		}
+ 	}
 
-			if (bytes_read == 4)
-				return 1;
+ 	if (bytes_read == 4)
+ 		return 1;
 
-			return -1;
-		}
+ 	return -1;
+ }
 
  /* ● For the Codebreaker (minor number 1) -
  *   Attempts to read the feedback buffer.
@@ -223,60 +226,62 @@ write_lock,
  *   This operation should return 1 upon success, and empty both the guess buffer and the
  *   feedback buffer
  */
-		if (data->minor == 1){
-			if (data->turns == 0)
-				return -EPERM;
+ if (data->minor == 1){
+ 	if(round_id != data.round_id){
+ 		data->turns =NUM_TURNS;
+ 		data->round_id = round_id;
+ 	}
+ 	if (data->turns == 0)
+ 		return -EPERM;
 
-			if (!feedbackReady){
-				if (num_of_codemakers == 0)
-					return EOF;
+ 	if (!feedbackReady){
+ 		if (num_of_codemakers == 0)
+ 			return EOF;
 
-				wait_event_interruptible(wq_guess, feedbackReady);
-			}
+ 		wait_event_interruptible(wq_guess, feedbackReady > 0);
+ 	}
 
-			int bytes_read = 0;
-			bool guessed = true;
+ 	int bytes_read = 0;
+ 	bool guessed = true;
 
-			if (feedbackReady){
-				MassagePtr = guessBuf;
-				if (*MassagePtr == 0)
-					return EOF;
+ 	if (feedbackReady){
+ 		MassagePtr = guessBuf;
+ 		if (*MassagePtr == 0)
+ 			return EOF;
 
-				while (count && *MassagePtr) {
-					if (*MassagePtr != 2)
-						guessed = false;
+ 		while (count && *MassagePtr) {
+ 			if (*MassagePtr != 2)
+ 				guessed = false;
 
-					if (!put_user(*(MassagePtr++), buf++))
-						return -ENOMEM;
-					count--;
-					bytes_read++;
-				}
-			}
+ 			if (!put_user(*(MassagePtr++), buf++))
+ 				return -ENOMEM;
+ 			count--;
+ 			bytes_read++;
+ 		}
+ 	}
+ 	if (guessed){
+ 		in_round = false;
+ 		data->score++;
+ 	}
 
-			if (guessed){
-				in_round = false;
-				data->score++;
-			}
+ 	if (bytes_read == 4){
+ 		feedbackReady = guessReady = false;
+ 		return 1;
+ 	}
+ }
+ return -1;
+}
 
-			if (bytes_read == 4){
-				feedbackReady = guessReady = false;
-				return 1;
-			}
-			wake_up_interruptible(&wq_guess);
-		}
-		return -1;
-	}
-
-	/* 
-	 * Auxillary func:
-	 * checks inputs range
-	 */
-	bool checkInput(char car){
-		if(car < '0' || car > ('0'+colour_range)){
-			return false;
-		}
-		return true;
-	}
+/* 
+ * Auxillary func:
+ * checks inputs range
+ */
+ bool checkInput(char car){
+ 	if(car < '0' || car > ('0'+colour_range)){
+ 		return false;
+ 	}
+ 	return true;
+ }
 
 /*
  * ● For the Codemaker (minor number 0) -
@@ -289,58 +294,76 @@ write_lock,
  *   If the feedback buffer is full then the function should immediately return -EBUSY.
  *   Returns 1 upon success.
 */
-	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
-		Device_private_data data = filp->private_data;
-		if (data->minor == 0 ){
-			if(in_round==false){
-				int i;
-				for (i = 0; i < count && i < BUF_LEN; i++){
-					if (!get_user(passwordBuf[i], buf + i))
-						return -ENOMEM;
-				}
-				passwordReady = true;
-				wake_up_interruptible(wq_guess);
-				return 1;
-			}else{
-				//TODO in case there is breakers or not
-			}
-		}
-		
-		int i = 0;
-/*
- * ● For the Codebreaker (minor number 1) -
- *   Attempts to write the contents of buf into the guess buffer.
- *   If buf contains an illegal character (one which exceeds the specified range of colors) then
- *   this function should return -EINVAL.
- *   If the guess buffer is full and no Codemaker exists then this function should return EOF.
- *   If the guess buffer is full but a Codemaker exists then the Codebreaker should wait until
- *   it is emptied (you may assume that the Codebreaker who filled the buffer will eventually
- *   empty it).
- *   Returns 1 upon success.
- */
-		if (data->minor == 1){
-			if (guessReady){
-				if(codemaker_exists){
-					wait_event_interruptible(wq_guess, !guessReady);
-				}else{
-					return EOF;
-				}
-			}
-			
-			for (; i < count && i < BUF_LEN; i++){
-				if (!get_user(guessBuf[i], buf + i))
-					return -ENOMEM;
+ ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
+ 	Device_private_data data = filp->private_data;
+ 	if (data->minor == 0 ){
+		//feedback buffer is full
+ 		if(feedbackReady){
+ 			return -EBUSY;
+ 		}
 
-				if(!checkInput(guessBuf[i])){
-					return -EINVAL;
-				}
+		//round didnt started yet
+ 		if(in_round==false){
+ 			int i;
+ 			for (i = 0; i < count && i < BUF_LEN; i++){
+ 				if (!get_user(passwordBuf[i], buf + i))
+ 					return -ENOMEM;
+ 			}
+ 			passwordReady = true;
+ 			wake_up_interruptible(wq_guess);
+ 			return 1;
+ 		}
+			//round started
+ 		int retval = generateFeedback(feedbackBuf, guessBuf, passwordBuf);
+			//we have a winner
+ 		if (retval){
+				//TODO win case
+ 			return 1;
+ 		}
+ 		feedbackReady = true;
+ 		guessReady = false;
 
-				guessReady = true;
-				wake_up_interruptible(&wq_guess);
-			}
-		}
+			//TODO in case there is breakers or not
 
-		return i;
+ 	}
+
+
+	/*
+ 	 * ● For the Codebreaker (minor number 1) -
+	 *   Attempts to write the contents of buf into the guess buffer.
+	 *   If buf contains an illegal character (one which exceeds the specified range of colors) then
+	 *   this function should return -EINVAL.
+	 *   If the guess buffer is full and no Codemaker exists then this function should return EOF.
+	 *   If the guess buffer is full but a Codemaker exists then the Codebreaker should wait until
+	 *   it is emptied (you may assume that the Codebreaker who filled the buffer will eventually
+	 *   empty it).
+	 *   Returns 1 upon success.
+	 */
+	 if (data->minor == 1 ){
+	 	if (!in_round) return -EIO;
+	 	if(!data.turns) return -EPERM;
+	 	//the guess Buffer is busy- wait
+	 	if (guessReady){
+	 		if(codemaker_exists){
+	 			wait_event_interruptible(wq_guess, !guessReady);
+	 		}else{
+	 			return EOF;
+	 		}
+	 	}
+
+	 	i = 0;
+	 	for (; i < count && i < BUF_LEN; i++){
+	 		if (!get_user(guessBuf[i], buf + i))
+	 			return -ENOMEM;
+	 		if(!checkInput(guessBuf[i])){
+	 			guessReady = false;
+	 			return -EINVAL;
+	 		}
+	 		guessReady = true;
+	 		data.turns--;
+	 	}
+	 }
+	 return i;
 	}
 /*
  * This function is not needed in this exercise, but to prevent the OS from generating a default
@@ -422,42 +445,42 @@ write_lock,
 	{
 		major_num = register_chrdev(ZERO, DEVICE_NAME, &fops);
 
-		if (major_num < 0)
-		{
-			printk(KERN_ALERT "Registering mastermind device failed with %d\n",
-				major_num);
-			return major_num;
-		}
+ 	if (major_num < 0)
+ 	{
+ 		printk(KERN_ALERT "Registering mastermind device failed with %d\n",
+ 			major_num);
+ 		return major_num;
+ 	}
 
 		passwordReady = guessReady = feedbackReady = false;
 		memset(passwordBuf, 0, BUF_LEN);
 		memset(feedbackBuf, 0, BUF_LEN);
 		memset(guessBuf, 0, BUF_LEN);
 
-		num_of_codemakers = 0;
-		num_of_codebrakers = 0;
-		spin_lock_init(&codemaker_exists_lock);
-		spin_lock_init(&counters_lock);
-		init_waitqueue_head(&wq_guess);
-		sema_init(&read_lock, 1);
-		sema_init(&write_lock, 1);
-		sema_init(&index_lock, 1);
+ 	num_of_codemakers = 0;
+ 	num_of_codebrakers = 0;
+ 	spin_lock_init(&codemaker_exists_lock);
+ 	spin_lock_init(&counters_lock);
+ 	init_waitqueue_head(&wq_guess);
+ 	sema_init(&read_lock, 1);
+ 	sema_init(&write_lock, 1);
+ 	sema_init(&index_lock, 1);
 
-		printk("mastermind device registered with %d major\n",major_num);
-		return 0;
-	}
+ 	printk("mastermind device registered with %d major\n",major_num);
+ 	return 0;
+ }
 
 /* 
  * Cleanup - unregister the appropriate file from /proc 
  */
-	void cleanup_module()
-	{
-		int ret;
+ void cleanup_module()
+ {
+ 	int ret;
 
-		ret = unregister_chrdev(major_num, DEVICE_NAME);
+ 	ret = unregister_chrdev(major_num, DEVICE_NAME);
 
-		if (ret < 0)
-			printk(KERN_ALERT "Error: unregister_chrdev: %d\n", ret);
+ 	if (ret < 0)
+ 		printk(KERN_ALERT "Error: unregister_chrdev: %d\n", ret);
 
-		printk("releasing mastermind module with %d major\n",major_num);
-	}
+ 	printk("releasing mastermind module with %d major\n",major_num);
+ }
