@@ -1,0 +1,8 @@
+#!/bin/bash
+rsync --checksum --update -recursice --links --copy-links --progress /mnt/hgfs/SharedFolder/module/ /root/module
+cd /root/module
+rm *.o
+rm main
+dos2unix $(find . -type f | grep -v 'git' | grep -v '.o')
+chmod +x SyncModuleToVM
+chmod +x runtest

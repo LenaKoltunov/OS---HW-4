@@ -2,24 +2,24 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <asm/semaphore.h>
-#include <linux/fs.h> 			//for struct file_operations
-#include <linux/kernel.h> 		//for printk()
-#include <asm/uaccess.h> 		//for copy_from_user()
+#include <linux/fs.h>
+#include <linux/kernel.h>
+#include <asm/uaccess.h>
 #include <linux/sched.h>
-#include <linux/slab.h>			// for kmalloc
+#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include "hw4.h"
 #include "encryptor.h"
 #include "mastermind.h"
-#include "simple_module.h"
 
 MODULE_LICENSE("GPL");
 
 //--------------------------------- Defines ---------------------------------//
 #define BUF_LEN 5
 #define ZERO 0
+#define DEVICE_NAME "mastermind"
 
 //--------------------------------- In Lines ---------------------------------//
 static inline int get_mahor_from_inode(struct inode *inode)
@@ -73,7 +73,6 @@ struct semaphore
 read_lock,
 write_lock,
 	index_lock; //TODO
-
 //-------------------------------- Functions ---------------------------------//
 
 /*
@@ -84,6 +83,8 @@ write_lock,
  * Codebreakers should get 10 turns (each) by default when opening the module.
  */
 	int open(struct inode* inode, struct file* filp){
+		printk("trying to open file\n");
+		
 		int minor = get_minor_from_inode(inode);
 
 		spin_lock(codemaker_exists_lock);
@@ -92,6 +93,7 @@ write_lock,
 
 		if (minor == 0)
 			codemaker_exists = true;
+
 		spin_unlock(codemaker_exists_lock);
 
 		filp->private_data = kmalloc(sizeof(Device_private_data), GFP_KERNEL);
@@ -117,6 +119,7 @@ write_lock,
 		}
 		spin_unlock(counters_lock);
 
+		printk("open file successfully\n");
 		return 0;
 
 	}
@@ -193,7 +196,8 @@ write_lock,
 					return EOF;
 
 				while (count && *MassagePtr) {
-					put_user(*(MassagePtr++), buf++);
+					if (!put_user(*(MassagePtr++), buf++)) 
+						return -ENOMEM;
 					count--;
 					bytes_read++;
 				}
@@ -241,7 +245,8 @@ write_lock,
 					if (*MassagePtr != 2)
 						guessed = false;
 
-					put_user(*(MassagePtr++), buf++);
+					if (!put_user(*(MassagePtr++), buf++))
+						return -ENOMEM;
 					count--;
 					bytes_read++;
 				}
@@ -269,65 +274,16 @@ write_lock,
  *   writing.
  *   If the feedback buffer is full then the function should immediately return -EBUSY.
  *   Returns 1 upon success.
- * ● For the Codebreaker (minor number 1) -
- *   Attempts to write the contents of buf into the guess buffer.
- *   If buf contains an illegal character (one which exceeds the specified range of colors) then
- *   this function should return -EINVAL.
- *   If the guess buffer is full and no Codemaker exists then this function should return EOF.
- *   If the guess buffer is full but a Codemaker exists then the Codebreaker should wait until
- *   it is emptied (you may assume that the Codebreaker who filled the buffer will eventually
- *   empty it).
- *   Returns 1 upon success.
- */
-	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
-		Device_private_data data = filp->private_data;
-		if (data->minor == 0 ){
-			if(in_round==false){
-				int i;
-				for (i = 0; i < count && i < BUF_LEN; i++){
-					get_user(codeBuf[i], buf + i);
-					codeLen++;
-				}
-				return 1;
-			}else{
-				//TODO in case there is breakers or not
-			}
-		}
+*/
 
-		if (data->minor == 1 ){
-			if (guessLen != 0){
-
-				if(codemaker_exits){
-					wait_event_interruptible(wq_codebrakers, guessLen == 0);
-				}else{
-					return EOF;
-				}
-			}
-			int i;
-			for (i = 0; i < count && i < BUF_LEN; i++){
-				get_user(guessBuf[i], buf + i);
-				if(!checkInput(guessBuf[i])){
-					clearBuf(guessBuf, BUF_LEN);
-					return -EINVAL;
-				}
-				guessLen++;
-			}
-		}
-
-
-		MassagePtr = buffer;
-
-		return i;
-	}
-
-	/* 
-	 * Auxillary func:
-	 * clears buffer
-	 */
+/* 
+* Auxillary func:
+* clears buffer
+*/
 
 	void clearBuf(char *buf, int size){
 		int i;
-		for (int i = 0; i < size; ++i)
+		for (i = 0; i < size; ++i)
 		{
 			buf[i]=0;
 		}
@@ -342,6 +298,60 @@ write_lock,
 			return false;
 		}
 		return true;
+	}
+
+	ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
+		Device_private_data data = filp->private_data;
+		if (data->minor == 0 ){
+			if(in_round==false){
+				int i;
+				for (i = 0; i < count && i < BUF_LEN; i++){
+					if (!get_user(passwordBuf[i], buf + i))
+						return -ENOMEM;
+					passwordReady = true;
+				}
+				return 1;
+			}else{
+				//TODO in case there is breakers or not
+			}
+		}
+		
+		int i = 0;
+/*
+ * ● For the Codebreaker (minor number 1) -
+ *   Attempts to write the contents of buf into the guess buffer.
+ *   If buf contains an illegal character (one which exceeds the specified range of colors) then
+ *   this function should return -EINVAL.
+ *   If the guess buffer is full and no Codemaker exists then this function should return EOF.
+ *   If the guess buffer is full but a Codemaker exists then the Codebreaker should wait until
+ *   it is emptied (you may assume that the Codebreaker who filled the buffer will eventually
+ *   empty it).
+ *   Returns 1 upon success.
+ */
+		if (data->minor == 1 ){
+			if (guessReady){
+				if(codemaker_exists){
+					wait_event_interruptible(wq_guess, !guessReady);
+				}else{
+					return EOF;
+				}
+			}
+			
+			for (; i < count && i < BUF_LEN; i++){
+				if (!get_user(guessBuf[i], buf + i))
+					return -ENOMEM;
+				if(!checkInput(guessBuf[i])){
+					clearBuf(guessBuf, BUF_LEN);
+					return -EINVAL;
+				}
+				guessReady = true;
+			}
+		}
+
+
+		// MassagePtr = buffer;
+
+		return i;
 	}
 /*
  * This function is not needed in this exercise, but to prevent the OS from generating a default
@@ -420,7 +430,7 @@ write_lock,
 
 		if (major_num < 0)
 		{
-			printk(KERN_ALERT "Registering char device failed with %d\n",
+			printk(KERN_ALERT "Registering mastermind device failed with %d\n",
 				major_num);
 			return major_num;
 		}
@@ -439,9 +449,7 @@ write_lock,
 		sema_init(&write_lock, 1);
 		sema_init(&index_lock, 1);
 
-
-		printk("simple device registered with %d major\n",major_num);
-
+		printk("mastermind device registered with %d major\n",major_num);
 		return 0;
 	}
 
@@ -457,5 +465,5 @@ write_lock,
 		if (ret < 0)
 			printk(KERN_ALERT "Error: unregister_chrdev: %d\n", ret);
 
-		printk("releasing module with %d major\n",major_num);
+		printk("releasing mastermind module with %d major\n",major_num);
 	}
