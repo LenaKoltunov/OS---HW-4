@@ -5,10 +5,16 @@ include $(KERNELDIR)/.config
 
 FLAGS = -D__KERNEL__ -DMODULE -I$(KERNELDIR)/include -O -Wall
 OBJ = mastermind.o
-FILES = mastermind.c mastermind.h
+FILES = mastermind.c mastermind.h hw4.h encryptor.h
 
 $(OBJ) : $(FILES)
 	$(CC) -c $(FLAGS) $(FILES)
+
+test : test_files/main.c
+	gcc test_files/main.c -o test
+
+test1 : test1_files/test.c
+	gcc test1_files/test.c -o test1 -lpthread
 
 clear :
 	rm -f $(OBJ)

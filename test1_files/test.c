@@ -35,7 +35,7 @@ void* start_game(void* arg) {
 
 	sleep(2);
 
-	ASSERT_EQ(ioctl(fd, ROUND_START, 4) > 0 , true);
+	ASSERT_EQ(ioctl(fd, ROUND_START, 4) >= 0 , true);
 	ASSERT_EQ(ioctl(fd, GET_MY_SCORE), 0);
 
 	char res[5];

@@ -116,6 +116,7 @@ int main(void) {
 	write(fdMaker, buf, 4);
 	read(fdBreaker[0], buf, 4);
 
+
 	res = ioctl(fdMaker, GET_MY_SCORE);
 	printf("Maker score is %d\n", res);
 

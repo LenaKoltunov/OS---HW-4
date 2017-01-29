@@ -10,13 +10,14 @@
 #include <linux/spinlock.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "hw4.h"
+#include "encryptor.h"
 #include "mastermind.h"
 
 MODULE_LICENSE("GPL");
 
 //--------------------------------- Defines ---------------------------------//
 #define BUF_LEN 5
-#define PASS_LEN BUF_LEN-1
 #define NUM_TURNS 10
 #define ZERO 0
 #define DEVICE_NAME "mastermind"
@@ -36,15 +37,17 @@ static inline int get_minor_from_inode(struct inode *inode)
 //-------------------------------- Variables ---------------------------------//
 int major_num;
 
+bool codemaker_exists;
+spinlock_t codemaker_exists_lock;
+
 int colour_range;
 
 bool in_round;
 int round_id;
-
-bool maker_won;
-bool breaker_won;
+spinlock_t in_round_lock;
 
 char passwordBuf[BUF_LEN];
+char feedbackBuf[BUF_LEN];
 char guessBuf[BUF_LEN];
 
 bool guessedCorrect;
@@ -68,9 +71,14 @@ int num_of_codemakers;
 int num_of_codebrakers;
 int num_of_codebrakers_playing;
 
-wait_queue_head_t wq;
+wait_queue_head_t wq_guess;
 
-spinlock_t spin_lock;
+spinlock_t counters_lock;
+
+struct semaphore
+read_lock,
+write_lock,
+index_lock;
 //-------------------------------- Functions ---------------------------------//
 
 /*
@@ -81,13 +89,16 @@ spinlock_t spin_lock;
  * Codebreakers should get 10 turns (each) by default when opening the module.
  */
 int open(struct inode* inode, struct file* filp){
+	printk("trying to open file\n");
+
 	int minor = get_minor_from_inode(inode);
 
-	spin_lock(spin_lock);
-	if (num_of_codemakers && (minor == 0))
+	spin_lock(codemaker_exists_lock);
+	if (codemaker_exists && (minor == 0))
 		return -EPERM;
 
-	spin_unlock(spin_lock);
+	spin_unlock(codemaker_exists_lock);
+
 	filp->private_data = kmalloc(sizeof(Device_private_data), GFP_KERNEL);
 	if (filp->private_data == NULL)
 		return -ENOMEM;
@@ -95,18 +106,17 @@ int open(struct inode* inode, struct file* filp){
 	Device_private_data data = filp->private_data;
 	data->minor = minor;
 	data->score = 0;
-
-	spin_lock(spin_lock);
 	data->round_id = round_id;
-	spin_unlock(spin_lock);
-
 	filp->f_op = &fops;
+
 	if (minor == 1) {
 		data->turns = NUM_TURNS;
 	}
-	spin_lock(spin_lock);
+
+	spin_lock(counters_lock);
 	if (minor == 0)
 	{
+		codemaker_exists = true;
 		num_of_codemakers++;
 	}
 	if (minor == 1)
@@ -114,8 +124,9 @@ int open(struct inode* inode, struct file* filp){
 		num_of_codebrakers++;
 		num_of_codebrakers_playing++;
 	}
-	spin_unlock(spin_lock);
+	spin_unlock(counters_lock);
 
+	printk("open file successfully\n");
 	return 0;
 
 }
@@ -134,31 +145,26 @@ int release(struct inode* inode, struct file* filp){
 
 		if (data->minor == 0)
 		{
-			spin_lock(spin_lock);
-			if (in_round && !breaker_won && !maker_won){
-				spin_unlock(spin_lock);
+			if (in_round){
 				return -EBUSY;
 			}
 
+			spin_lock(counters_lock);
 			num_of_codemakers--;
-			in_round = passwordReady = false;
-			maker_won = breaker_won = false;
-			spin_unlock(spin_lock);
+			spin_unlock(counters_lock);
 
-			wake_up_interruptible(&wq);
+			wake_up_interruptible(&wq_guess);
 		}
-
-		if (data->minor == 1){
-			if (data->turns>0)
-			{
-				spin_lock(spin_lock);
+		if (data->minor == 1 && data->turns>0)
+		{
+			spin_lock(counters_lock);
+			if (!data->turns)
 				num_of_codebrakers_playing--;
-				if (in_round && !num_of_codebrakers_playing)
-					maker_won = true;
-			}
 			num_of_codebrakers--;
+			spin_unlock(counters_lock);
+				// wake_up_interruptible(&wq_codemakers);
 		}
-		spin_unlock(spin_lock);
+
 		kfree(filp->private_data);
 
 		return 0;
@@ -184,48 +190,35 @@ ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
 
 	Device_private_data data = filp->private_data;
 	if (data->minor == 0 ){
-		spin_lock(spin_lock);
-		if (!in_round){
-			spin_unlock(spin_lock);
+		if (!in_round)
 			return -EIO;
-		}
+		printk("Codemaker Read\n");
 
 		if (!guessReady){
 			if (num_of_codebrakers_playing == 0){
-				spin_unlock(spin_lock);
 				return EOF;
 			}
-			spin_unlock(spin_lock);
-			retval = wait_event_interruptible(wq, guessReady);
-			if (retval){
+			retval = wait_event_interruptible(wq_guess, guessReady);
+			if (retval)
 				return -EINTR;
-			}
-			spin_lock(spin_lock);
-			if (!in_round){
-				spin_unlock(spin_lock);
+
+			if (!in_round)
 				return -EIO;
-			}
 		}
 
-		char feedbackBuf[BUF_LEN];
-		feedbackBuf[BUF_LEN-1] = '\0';
-		generateFeedback(feedbackBuf, guessBuf, passwordBuf);
 
-		spin_lock(spin_lock);
 		if (guessReady){
-			spin_unlock(spin_lock);
+			char tempBuf[BUF_LEN];
+			guessedCorrect = generateFeedback(tempBuf, guessBuf, passwordBuf);
 
 			int i;
-			for (i = 0; i < count && i < PASS_LEN;i++){
-				retval = put_user(feedbackBuf[i], buf++);
+			for (i = 0; i < count && i < BUF_LEN;i++){
+				retval = put_user(tempBuf[i], buf + i);
 				if (retval)
 					return retval;
 			}
-			retval = put_user(NULL, buf++);
-			if (retval)
-				return retval;
+		}
 
-		} else spin_unlock(spin_lock);
 		return 1;
 	}
 
@@ -243,11 +236,9 @@ ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
  *   feedback buffer
  */
 	if (data->minor == 1){
-		spin_lock(spin_lock);
-		if (!in_round){
-			spin_unlock(spin_lock);
+		printk("Codebreaker Read\n");
+		if (!in_round)
 			return -EIO;
-		}
 
 		if(round_id != data->round_id){
 			data->turns = NUM_TURNS;
@@ -258,57 +249,53 @@ ssize_t read(struct file *filp, char *buf, size_t count, loff_t *f_pos){
 			return -EPERM;
 
 		if (!feedbackReady){
-			if (num_of_codemakers == 0){
-				spin_unlock(spin_lock);
+			if (num_of_codemakers == 0)
 				return EOF;
-			}
-			spin_unlock(spin_lock);
 
-			retval = wait_event_interruptible(wq, passwordReady && feedbackReady);
-			if (retval){
+			retval = wait_event_interruptible(wq_guess, feedbackReady > 0);
+
+			if (retval)
 				return -EINTR;
-			}
-			spin_lock(spin_lock);
-			if (!in_round){
-				spin_unlock(spin_lock);
+
+			if (!in_round)
 				return -EIO;
-			}
-			spin_lock(spin_lock);
 		}
 
+		bool guessed = true;
 
-		char feedbackBuf[BUF_LEN];
-		feedbackBuf[BUF_LEN-1] = '\0';
-		generateFeedback(feedbackBuf, guessBuf, passwordBuf);
+		if (feedbackReady){
 
-		int i;
-		for (i = 0;i < count && i < PASS_LEN;i++){
-			retval = put_user(feedbackBuf[i], buf++);
+			int i;
+			for (i = 0;i < count && i < BUF_LEN;i++){
+				retval = put_user(feedbackBuf[i], buf++);
 
-			if (retval){
-				return retval;
+				if (retval)
+					return retval;
+
+				if (feedbackBuf[i] != '2')
+					guessed = false;
 			}
 		}
-		retval = put_user(NULL, buf++);
-		if (retval)
-			return retval;
+
 /*
 * If the executing Breaker didn't win, exhausted his last turn, and was the last breaker with any turns left - then the round also must end. This time, however, the Codemaker needs to win and earn a point (and the round needs to end)
 * In any case - don't forget to empty both buffers
 */
-		spin_lock(spin_lock);
-
+		printk("	Codebreaker Readed feedback\n");
 		feedbackReady = false;
-		guessReady = false;
-		wake_up_interruptible(&wq);
+		if (guessed){
+			printk("	Codebreaker Guessed Trully\n");
+			in_round = false;
+			data->score++;
+		}
 
 		if (!num_of_codebrakers_playing){
 			in_round = false;
 		}
-		spin_unlock(spin_lock);
+
 		return 1;
 	}
-	return 0;
+	return -1;
 }
 
 /* 
@@ -339,53 +326,42 @@ ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
 	Device_private_data data = filp->private_data;
 
 	if (data->minor == 0 ){
-		spin_lock(spin_lock);
-		if(!in_round){
-			spin_unlock(spin_lock);
+		printk("Codemaker Write:\n");
 
+		if(!in_round){
+			printk("	Codemaker Write password\n");
 			int i;
-			for (i = 0;i < count && i < PASS_LEN;i++){
+			for (i = 0;i < count && i < BUF_LEN;i++){
 				retval = get_user(passwordBuf[i], buf + i);
 				if (retval)
 					return retval;
 			}
-
-			spin_lock(spin_lock);
 			passwordReady = true;
-			guessReady = false;
-			feedbackReady = false;
 
-			spin_unlock(spin_lock);
-			wake_up_interruptible(&wq);
+			wake_up_interruptible(&wq_guess);
+			printk("	Codemaker Write password success\n");
 			return 1;
 		}
 
-		spin_lock(spin_lock);
+		printk("	Codemaker Write feedback\n");
 		if(feedbackReady){
-			spin_unlock(spin_lock);
 			return -EBUSY;
 		}
-		char feedbackBuf[BUF_LEN];
-		feedbackBuf[BUF_LEN-1] = '\0';
-		generateFeedback(feedbackBuf, guessBuf, passwordBuf);
+
+		guessedCorrect = generateFeedback(feedbackBuf, guessBuf, passwordBuf);
 
 		int i;
-		for (i = 0;i < count && i < PASS_LEN;i++){
+		for (i = 0;i < count && i < BUF_LEN;i++){
 			retval = get_user(feedbackBuf[i], buf + i);
 			if (retval)
 				return retval;
 		}
 
 		feedbackReady = true;
-		wake_up_interruptible(&wq);
+		guessReady = false;
 
-		if (maker_won){
+		if (!num_of_codebrakers_playing && !guessedCorrect)
 			data->score++;
-			maker_won = false;
-			in_round = false;
-		}
-
-		spin_unlock(spin_lock);
 
 		return 1;
 	}
@@ -403,75 +379,53 @@ ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
 	 *   Returns 1 upon success.
 	 */
 	if (data->minor == 1 ){
-		spin_lock(spin_lock);
-		if (!in_round || breaker_won || maker_won){
-			spin_unlock(spin_lock);
+		printk("Codebreaker Write\n");
+		printk("	in_round: %d\n",in_round);
+		if (!in_round)
 			return -EIO;
-		}
 
 		if (data->round_id != round_id){
 			data->round_id = round_id;
 			data->turns = NUM_TURNS;
 		}
 
-		if(!data->turns){
-			spin_unlock(spin_lock);
+		printk("	data->turns: %d\n",data->turns);
+		if(!data->turns)
 			return -EPERM;
-		}
 
+		printk("	guessReady: %d\n",guessReady);
 		if (guessReady){
-			if(!num_of_codemakers){
-				spin_unlock(spin_lock);
+			if(!codemaker_exists){
+				printk("EOF\n");
 				return EOF;
 			}
-
-			spin_unlock(spin_lock);
-			retval = wait_event_interruptible(wq, !guessReady);
+			retval = wait_event_interruptible(wq_guess, !guessReady);
 			if (retval)
 				return -EINTR;
-			spin_lock(spin_lock);
-			if (!in_round || breaker_won || maker_won){
-				spin_unlock(spin_lock);
+			if (!in_round)
 				return -EIO;
-			}
-			spin_unlock(spin_lock);
 		}
 
+		printk("	guessBuf\n");
 		int i;
-		for (i = 0;i < count && i < PASS_LEN;i++){
+		for (i = 0;i < count && i < BUF_LEN;i++){
 			retval = get_user(guessBuf[i], buf + i);
 			if (retval){
 				return retval;
 			}
+
 			if(!checkInput(guessBuf[i])){
 				return -EINVAL;
 			}
 		}
 
-		spin_lock(spin_lock);
 		guessReady = true;
 		data->turns--;
 
 		if (!data->turns){
 			num_of_codebrakers_playing--;
 		}
-
-		char feedbackBuf[BUF_LEN];
-		feedbackBuf[BUF_LEN-1] = '\0';
-		int guessed = generateFeedback(feedbackBuf, guessBuf, passwordBuf);
-
-		if (guessed){
-			data->score++;
-			breaker_won = true;
-		}
-
-		if (!num_of_codebrakers_playing && !guessed){
-			maker_won = true;
-		}
-
-		spin_unlock(spin_lock);
-		wake_up_interruptible(&wq);
-
+		printk("	Codebreaker Write Successfully\n");
 		return 1;
 	}
 
@@ -482,6 +436,7 @@ ssize_t write(struct file *filp, const char *buf, size_t count, loff_t *f_pos){
  * implementation you should write this function to always return -ENOSYS when invoked. - DONE
  */
 loff_t llseek(struct file *filp, loff_t a, int num){
+	printk("llseek\n");
 	return -ENOSYS;
 }
 
@@ -501,6 +456,7 @@ int ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned lon
 	Device_private_data data = filp->private_data;
 	switch( cmd ) {
 		case ROUND_START:
+		printk("ioctl with ROUND_START:\n");
 		if (data->minor == 1)
 			return -EPERM;
 
@@ -509,33 +465,25 @@ int ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned lon
 
 		colour_range = arg;
 
-		spin_lock(spin_lock);
-		if (in_round){
-			spin_unlock(spin_lock);
+		printk("	in_round: %d expected 0\n",in_round);
+		if (in_round)
 			return -EBUSY;
-		}
 
-		if (!num_of_codebrakers){
-			spin_unlock(spin_lock);
+		if (!num_of_codebrakers)
 			return -EPERM;
-		}
 
+		printk("	passwordReady: %d\n",passwordReady);
+		printk("	num_of_codebrakers: %d\n",num_of_codebrakers);
 		if (passwordReady){
+			printk("	Round Started\n");
 			in_round = true;
-			guessReady = feedbackReady = false;
 			round_id++;
-			spin_unlock(spin_lock);
-			return 1;
+			return 0;
 		}
-		spin_unlock(spin_lock);
 		return -1;
 
 		case GET_MY_SCORE:
-		if (!data->minor && maker_won){
-			maker_won = false;
-			in_round = false;
-			data->score++;
-		}
+		printk("	ioctl with GET_MY_SCORE\n");
 		return data->score;
 	}
 	return -ENOTTY;
@@ -571,18 +519,24 @@ int init_module()
 
 	if (major_num < 0)
 	{
+		printk(KERN_ALERT "Registering mastermind device failed with %d\n", major_num);
 		return major_num;
 	}
 
-	in_round = maker_won = breaker_won = guessedCorrect = passwordReady = guessReady = feedbackReady = false;
+	in_round = guessedCorrect = passwordReady = guessReady = feedbackReady = false;
 	memset(passwordBuf, 0, BUF_LEN);
+	memset(feedbackBuf, 0, BUF_LEN);
 	memset(guessBuf, 0, BUF_LEN);
 
 	num_of_codemakers = 0;
 	num_of_codebrakers = 0;
 	num_of_codebrakers_playing = 0;
-	spin_lock_init(&spin_lock);
-	init_waitqueue_head(&wq);
+	spin_lock_init(&codemaker_exists_lock);
+	spin_lock_init(&counters_lock);
+	init_waitqueue_head(&wq_guess);
+	sema_init(&read_lock, 1);
+	sema_init(&write_lock, 1);
+	sema_init(&index_lock, 1);
 
 	printk("mastermind device registered with %d major\n",major_num);
 	return 0;

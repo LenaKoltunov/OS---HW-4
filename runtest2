@@ -1,0 +1,14 @@
+#!/bin/bash
+make
+
+cd test2_files
+make
+cd ..
+
+./indev
+
+cd test2_files
+./Tester
+cd ..
+
+./rmdev

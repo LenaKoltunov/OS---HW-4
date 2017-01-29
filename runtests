@@ -1,0 +1,4 @@
+#!/bin/bash
+./runtest
+./runtest1
+./runtest2

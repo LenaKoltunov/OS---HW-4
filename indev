@@ -1,0 +1,10 @@
+#!/bin/bash
+make
+insmod ./mastermind.o
+major_num=$(dmesg | tail -n 1 | cut -d' ' -f 5)
+echo $major_num
+mknod /dev/codemaker c $major_num 0
+mknod /dev/codebreaker c $major_num 1
+
+mknod /dev/maker c $major_num 0
+mknod /dev/breaker c $major_num 1

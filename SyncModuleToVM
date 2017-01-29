@@ -4,6 +4,15 @@ cd /root/module
 rm *.o
 rm main
 dos2unix $(find . -type f | grep -v 'git' | grep -v '.o')
+
 chmod +x SyncModuleToVM
-chmod +x runtest
+chmod +x maker
+chmod +x indev
 chmod +x rmdev
+chmod +x runtest
+chmod +x runtest1
+chmod +x runtest2
+chmod +x runtests
+rm -f test
+rm -f test1
+rm -f test2_files/Tester

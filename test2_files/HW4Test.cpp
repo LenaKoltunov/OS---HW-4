@@ -96,8 +96,8 @@ void BasicMasterBringUp()
 	TEST_CHECK_(res == 1,"Breaker wrote a wrong guess - expected to succeed.Got res=%d errno=%d",res,errno);
 	res = read(maker_fd,guess_buffer,4);
 	int cmpres=strcmp(guess_buffer,"0000");
-	TEST_CHECK_(res == 0 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d  errno=%d guess_buffer=%s"
-					,res,cmpres,errno,guess_buffer);
+	TEST_CHECK_(res > 0 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d  errno=%d guess_buffer=%s"
+		,res,cmpres,errno,guess_buffer);
 	res = write(maker_fd,guess_buffer,4);
 	TEST_CHECK_(res == 1,"Maker writes a response - should succeed.Got res=%d",res);
 	res = read(breaker1_fd,breaker_buffer,4);
@@ -120,7 +120,7 @@ void BasicMasterBringUp()
 	res = read(maker_fd,guess_buffer,4);
 	cmpres=strcmp(guess_buffer,"2222");
 	TEST_CHECK_(res == 1 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d errno=%d guess_buffer=%s",
-	            res,cmpres,errno,guess_buffer);
+		res,cmpres,errno,guess_buffer);
 	res = write(maker_fd,guess_buffer,4);
 	TEST_CHECK_(res == 1,"Maker writes a response - should succeed.Got res=%d",res);
 	res = read(breaker1_fd,breaker_buffer,4);
@@ -135,7 +135,7 @@ void BasicMasterBringUp()
 	
 	
 	res = close(breaker1_fd);
-	res=close(maker_fd);
+	res = close(maker_fd);
 	
 }
 
@@ -173,30 +173,30 @@ void SimpleGameTest()
 	{
 		//breaker 1
 		res = write(breaker1_fd,"0000",4);
-	TEST_CHECK_(res == 1,"Breaker wrote a wrong guess - expected to succeed.Got res=%d errno=%d",res,errno);
-	res = read(maker_fd,guess_buffer,4);
-	int cmpres=strcmp(guess_buffer,"0000");
-	TEST_CHECK_(res == 0 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d  errno=%d guess_buffer=%s"
-					,res,cmpres,errno,guess_buffer);
-	res = write(maker_fd,guess_buffer,4);
-	TEST_CHECK_(res == 1,"Maker writes a response - should succeed.Got res=%d",res);
-	res = read(breaker1_fd,breaker_buffer,4);
-	cmpres = strcmp(breaker_buffer,"0000");
-	TEST_CHECK_(res == 1 && cmpres == 0,"Breaker reads feedback.got res=%d and cmpres=%d errno=%d",res,cmpres,errno);
+		TEST_CHECK_(res == 1,"Breaker wrote a wrong guess - expected to succeed.Got res=%d errno=%d",res,errno);
+		res = read(maker_fd,guess_buffer,4);
+		int cmpres=strcmp(guess_buffer,"0000");
+		TEST_CHECK_(res > 0 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d  errno=%d guess_buffer=%s"
+			,res,cmpres,errno,guess_buffer);
+		res = write(maker_fd,guess_buffer,4);
+		TEST_CHECK_(res == 1,"Maker writes a response - should succeed.Got res=%d",res);
+		res = read(breaker1_fd,breaker_buffer,4);
+		cmpres = strcmp(breaker_buffer,"0000");
+		TEST_CHECK_(res == 1 && cmpres == 0,"Breaker reads feedback.got res=%d and cmpres=%d errno=%d",res,cmpres,errno);
 	#ifdef HW4_DEBUG
-	breaker1guesses--;	
-	total--;
-	
-	res = ioctl(maker_fd,GET_TURNS,0);
-	TEST_CHECK_(res == total,"Total guesses should decrement.Got %d expected %d",res,total);
-	res = ioctl(breaker1_fd,GET_TURNS,0);
-	TEST_CHECK_(res == breaker1guesses,"Breaker1 guesses should decrement.got %d expected %d",res,breaker1guesses);
+		breaker1guesses--;	
+		total--;
+
+		res = ioctl(maker_fd,GET_TURNS,0);
+		TEST_CHECK_(res == total,"Total guesses should decrement.Got %d expected %d",res,total);
+		res = ioctl(breaker1_fd,GET_TURNS,0);
+		TEST_CHECK_(res == breaker1guesses,"Breaker1 guesses should decrement.got %d expected %d",res,breaker1guesses);
 #endif		
 	}
 	//trying to guess after
 	res = write(breaker1_fd,"3030",4);
 	TEST_CHECK_(res == -1 && errno == EPERM,"Breaker 1 tries to guess without any more round remaining.Got res=%d errno=%d\nExpected res=%d errno=%d"
-	,res,errno,-1,EPERM);
+		,res,errno,-1,EPERM);
 	int breaker_3fd = open(utils.ParamToString("breaker_path").c_str(),O_RDWR);
 	TEST_CHECK_(breaker_3fd != -1,"Opened another breaker. breaker_3fd=%d  errno=%d",breaker_3fd,errno);
 	total+=10;
@@ -208,37 +208,37 @@ void SimpleGameTest()
 	#endif
 	//breaker 2
 	for(int i=0;i<10;i++){
-	
-	
-			res = write(breaker2_fd,"0000",4);
-	TEST_CHECK_(res == 1,"Breaker wrote a wrong guess - expected to succeed.Got res=%d errno=%d",res,errno);
-	res = read(maker_fd,guess_buffer,4);
-	int cmpres=strcmp(guess_buffer,"0000");
-	TEST_CHECK_(res == 0 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d  errno=%d guess_buffer=%s"
-					,res,cmpres,errno,guess_buffer);
-	res = write(maker_fd,guess_buffer,4);
-	TEST_CHECK_(res == 1,"Maker writes a response - should succeed.Got res=%d",res);
-	res = read(breaker2_fd,breaker_buffer,4);
-	cmpres = strcmp(breaker_buffer,"0000");
-	TEST_CHECK_(res == 1 && cmpres == 0,"Breaker reads feedback.got res=%d and cmpres=%d errno=%d",res,cmpres,errno);
+
+
+		res = write(breaker2_fd,"0000",4);
+		TEST_CHECK_(res == 1,"Breaker wrote a wrong guess - expected to succeed.Got res=%d errno=%d",res,errno);
+		res = read(maker_fd,guess_buffer,4);
+		int cmpres=strcmp(guess_buffer,"0000");
+		TEST_CHECK_(res > 0 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d  errno=%d guess_buffer=%s"
+			,res,cmpres,errno,guess_buffer);
+		res = write(maker_fd,guess_buffer,4);
+		TEST_CHECK_(res == 1,"Maker writes a response - should succeed.Got res=%d",res);
+		res = read(breaker2_fd,breaker_buffer,4);
+		cmpres = strcmp(breaker_buffer,"0000");
+		TEST_CHECK_(res == 1 && cmpres == 0,"Breaker reads feedback.got res=%d and cmpres=%d errno=%d",res,cmpres,errno);
 	#ifdef HW4_DEBUG
-	breaker2guesses--;
-	total--;
-	res = ioctl(maker_fd,GET_TURNS,0);
-	TEST_CHECK_(res == total,"Total guesses should decrement.Got %d expected %d",res,total);
-	res = ioctl(breaker2_fd,GET_TURNS,0);
-	TEST_CHECK_(res == breaker2guesses,"Breaker1 guesses should decrement.got %d expected %d",res,breaker2guesses);
+		breaker2guesses--;
+		total--;
+		res = ioctl(maker_fd,GET_TURNS,0);
+		TEST_CHECK_(res == total,"Total guesses should decrement.Got %d expected %d",res,total);
+		res = ioctl(breaker2_fd,GET_TURNS,0);
+		TEST_CHECK_(res == breaker2guesses,"Breaker1 guesses should decrement.got %d expected %d",res,breaker2guesses);
 	#endif
 	}
 	res = ioctl(maker_fd,GET_MY_SCORE,0);
 	TEST_CHECK_(res == 0,"Maker hasn't won yet. Got res=%d",res);
 	close(breaker_3fd);
 	res = write(breaker1_fd,"3030",4);
-	TEST_CHECK_(res == -1 && errno == EPERM,"Breaker 1 writes after breaker 3 left - round is over.Got res=%d errno=%d\nExpected res=%d errno=%d"
-	,res,errno,-1,EPERM);
+	TEST_CHECK_(res == -1 && errno == EIO,"Breaker 1 writes after breaker 3 left - round is over.Got res=%d errno=%d\nExpected res=%d errno=%d"
+		,res,errno,-1,EIO);
 	res = write(breaker2_fd,"3030",4);
-	TEST_CHECK_(res == -1 && errno == EPERM,"Breaker 1 writes after breaker 3 left - round is over.Got res=%d errno=%d\nExpected res=%d errno=%d"
-	,res,errno,-1,EPERM);
+	TEST_CHECK_(res == -1 && errno == EIO,"Breaker 1 writes after breaker 3 left - round is over.Got res=%d errno=%d\nExpected res=%d errno=%d"
+		,res,errno,-1,EIO);
 	//maker's score shouldve incremented
 	res = ioctl(maker_fd,GET_MY_SCORE,0);
 	TEST_CHECK_(res == 1,"Maker has won and deserves a point. Got res=%d",res);
@@ -281,7 +281,7 @@ void BreakerWriteEIOTest()
 	res = read(maker_fd,buffer,4);
 	int cmpres=strcmp(buffer,"2222");
 	TEST_CHECK_(res == 1 && cmpres == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d,cmpres=%d  errno=%d guess_buffer=%s"
-					,res,cmpres,errno,buffer);
+		,res,cmpres,errno,buffer);
 	res = write(maker_fd,buffer,4);
 	TEST_CHECK_(res == 1,"Maker writes a response - should succeed.Got res=%d",res);
 	res = read(breaker1_fd,buffer,4);
@@ -367,9 +367,9 @@ void* MakerRoutine(void* maker_data)
 	//NumOfRound = 0;
 	int res,maker_fd=data->fd,round=1,num_of_iterations=0;
 	for(vector<string>::iterator itr = data->passwords.begin();
-			itr != data->passwords.end();++itr){
+		itr != data->passwords.end();++itr){
 	//Before writing passwords we wait for breakers to be ready..			
-	pthread_mutex_lock(&global_mut);
+		pthread_mutex_lock(&global_mut);
 	while(breakers_ready != g_num_of_breakers){
 		cout<<"Maker:not enough breakers ready:"<<breakers_ready<<" out of "<<g_num_of_breakers<<" are.Waiting...\n";
 		pthread_cond_wait(&maker_cond,&global_mut);
@@ -387,7 +387,7 @@ void* MakerRoutine(void* maker_data)
 	while(1){
 		res = read(maker_fd,buffer,4);
 		TEST_CHECK_(res == 1 || res == 0,"Maker read a guess.Expected to read the inputed guess.Got res=%d  errno=%d guess_buffer=%s"
-					,res,errno,buffer);
+			,res,errno,buffer);
 		errno = 0;
 		res = write(maker_fd,buffer,4);
 		TEST_CHECK_(res == 1,"Maker writes the response.Got %d errno=%d",res,errno);
@@ -406,10 +406,10 @@ void* MakerRoutine(void* maker_data)
 		
 	}
 	round++;
-		
-	}
-	return 0;
-	
+
+}
+return 0;
+
 }
 static int num_of_rounds;
 void* BreakerRoutine(void* breaker_data)
@@ -508,10 +508,10 @@ void ConcurrentGameTest()
 	
 }
 TEST_LIST ={
-		{"BasicMasterBringUp",BasicMasterBringUp},
-			{"SimpleGameTest",SimpleGameTest},
-			{"BreakerWriteEIOTest",BreakerWriteEIOTest},
-			{"SignalInterruptTest",SignalInterruptTest},
-			{"ConcurrentGameTest",ConcurrentGameTest},
-		{0}
+	{"BasicMasterBringUp",BasicMasterBringUp},
+	{"SimpleGameTest",SimpleGameTest},
+	{"BreakerWriteEIOTest",BreakerWriteEIOTest},
+	{"SignalInterruptTest",SignalInterruptTest},
+	{"ConcurrentGameTest",ConcurrentGameTest},
+	{0}
 };

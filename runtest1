@@ -1,0 +1,9 @@
+#!/bin/bash
+make
+make test1
+
+./indev
+
+./test1
+
+./rmdev

@@ -1,0 +1,13 @@
+#!/bin/bash
+make
+make test
+make test1
+
+chmod +x test
+chmod +x test1
+
+cd test2_files/
+make
+cd ..
+
+chmod +x test2_files/Tester
